@@ -316,6 +316,93 @@ ros2 topic echo /joy
 
 Move each stick and note which `axes[]` index changes.
 
+### Three-wheel omni drivetrain
+
+The opt-in `drivetrain` component converts `/cmd_vel` to three Titan duty-cycle
+topics. It supports `type: "omni3"` only; selecting another type fails at
+startup until its controller is implemented. It runs in `manual_composition`,
+so no additional drivetrain executable is needed.
+
+Start with `config/params_template.yaml` and configure the following sections
+under `control_server.ros__parameters`. These values illustrate the layout;
+they are **not calibrated for your robot**:
+
+```yaml
+titan:
+  enabled: true
+  sensors: ["titan0"]
+  titan0:
+    can_id: 42                  # replace with your actual CAN ID
+    motor_freq: 15600
+    topic_timeout_sec: 0.3
+gamepad:
+  enabled: true
+  axis_linear_x: 1              # check /joy on your controller
+  axis_linear_y: 0
+  axis_angular_z: 3
+  button_deadman: 4             # check /joy; hold this button to move
+  button_turbo: 5
+  turbo_multiplier: 1.0
+  linear_scale: 0.1             # m/s at full stick
+  angular_scale: 0.3            # rad/s at full stick
+  joy_timeout_sec: 0.5
+drivetrain:
+  enabled: true
+  type: "omni3"
+  titan_name: "titan0"
+  motor_indices: [0, 1, 2]
+  wheel_angles_deg: [0.0, 120.0, 240.0]
+  wheel_directions: [1, 1, 1]
+  wheel_radius_m: 0.05
+  wheel_distance_m: 0.2
+  max_wheel_speed_rad_s: 20.0
+  max_duty: 0.2
+  cmd_timeout_sec: 0.3
+  publish_rate_hz: 50
+```
+
+Measure the wheel radius and the distance from the robot center to each wheel;
+the current model requires all three to have the same radius and distance.
+Wheel angles describe the **radial position** from the center, in degrees:
+0 is forward (+x), 90 is left (+y). Each wheel's positive rolling direction
+is tangential to its radial position, 90 degrees counterclockwise. Enter motor
+indices and polarity in that same wheel order. For an even triangle, verify its
+orientation instead of assuming the example's angles. Keep `invert_motor`
+disabled initially and use `wheel_directions` to adjust the signs once.
+
+`/cmd_vel` uses body-frame x forward and y left in m/s, and angular z
+counterclockwise in rad/s. The mixer calculates wheel angular speeds, divides by
+`max_wheel_speed_rad_s`, scales by `max_duty`, and proportionally scales all
+three outputs if the reference speed is exceeded. Titan duty commands are
+open-loop: the reference speed must be calibrated at `max_duty` and is not a
+closed-loop guarantee of actual wheel speed. The drivetrain continuously owns
+the configured motor command topics; do not run another command publisher or
+service controller on the same motors.
+
+Launch with the actual configuration file and joystick driver:
+
+```bash
+ros2 launch studica_control studica_launch.py params_file:=/absolute/path/to/params.yaml
+ros2 run joy joy_node --ros-args -p autorepeat_rate:=20.0 -p sticky_buttons:=false
+```
+
+Use separate terminals, with the same ROS domain and RMW configuration. Use
+`ros2 topic echo /joy`, `/cmd_vel` and `/titan0/m_0/cmd` to inspect each stage.
+The gamepad's axes and deadman button indices must exist on your controller.
+The deadman must be released once after startup or a joystick timeout before
+pressing it can move the robot; do not use the same button for turbo.
+Start with wheels lifted and low speed; check each wheel and the forward,
+sideways and rotation signs before floor operation.
+
+The gamepad outputs zero when the deadman is released or `/joy` stops; the
+drivetrain zeros stale `/cmd_vel`; and the Titan zeros stale motor **topic**
+commands when `topic_timeout_sec` is enabled. Set the joy node's autorepeat
+rate above the timeout frequency. These timeouts detect missing messages, not
+stale input that a joystick driver continues to repeat after a connection
+fault. Verify the behavior on your actual Bluetooth hardware, and provide an
+independent physical emergency stop. The timeouts are not a safety-rated stop.
+Titan service commands are not covered by the topic timeout.
+
 ### Verify Sensor Output
 
 ```bash

@@ -1,4 +1,5 @@
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,7 @@
 #include "studica_control/dio_component.hpp"
 #include "studica_control/encoder_component.hpp"
 #include "studica_control/gamepad_component.hpp"
+#include "studica_control/drivetrain_component.hpp"
 #include "studica_control/imu_component.hpp"
 #include "studica_control/light_tower_component.hpp"
 #include "studica_control/power_component.hpp"
@@ -40,6 +42,7 @@ public:
         this->declare_parameter<bool>("encoder.enabled", false);
         this->declare_parameter<bool>("light_tower.enabled", false);
         this->declare_parameter<bool>("gamepad.enabled", false);
+        this->declare_parameter<bool>("drivetrain.enabled", false);
         this->declare_parameter<bool>("imu.enabled", false);
         this->declare_parameter<bool>("servo.enabled", false);
         this->declare_parameter<bool>("sharp.enabled", false);
@@ -63,6 +66,7 @@ public:
         bool encoder_enabled      = this->get_parameter("encoder.enabled").as_bool();
         bool light_tower_enabled  = this->get_parameter("light_tower.enabled").as_bool();
         bool gamepad_enabled = this->get_parameter("gamepad.enabled").as_bool();
+        bool drivetrain_enabled = this->get_parameter("drivetrain.enabled").as_bool();
         bool imu_enabled = this->get_parameter("imu.enabled").as_bool();
         bool servo_enabled = this->get_parameter("servo.enabled").as_bool();
         bool sharp_enabled = this->get_parameter("sharp.enabled").as_bool();
@@ -121,6 +125,16 @@ public:
             component_nodes.insert(component_nodes.end(), titan_nodes.begin(), titan_nodes.end());
         }
 
+        if (drivetrain_enabled) {
+            if (!titan_enabled) {
+                throw std::invalid_argument("drivetrain requires titan.enabled");
+            }
+            if (gamepad_enabled && this->get_parameter("gamepad.button_deadman").as_int() < 0) {
+                throw std::invalid_argument("drivetrain with gamepad requires gamepad.button_deadman");
+            }
+            component_nodes.push_back(studica_control::Drivetrain::initialize(this));
+        }
+
         if (ultrasonic_enabled) {
             auto ultrasonic_nodes = studica_control::Ultrasonic::initialize(this, vmx_);
             component_nodes.insert(component_nodes.end(), ultrasonic_nodes.begin(), ultrasonic_nodes.end());
@@ -159,11 +173,19 @@ int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, BUFSIZ);
     rclcpp::init(argc, argv);
 
-    auto control_server = std::make_shared<ControlServer>();
-    if (control_server->initialize()) {
-        control_server->run();
+    int result = 0;
+    try {
+        auto control_server = std::make_shared<ControlServer>();
+        if (control_server->initialize()) {
+            control_server->run();
+        } else {
+            result = 1;
+        }
+    } catch (const std::invalid_argument &error) {
+        RCLCPP_FATAL(rclcpp::get_logger("control_server"), "Invalid configuration: %s", error.what());
+        result = 1;
     }
 
     rclcpp::shutdown();
-    return 0;
+    return result;
 }

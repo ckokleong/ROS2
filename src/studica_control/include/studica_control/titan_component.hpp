@@ -113,6 +113,7 @@
 #define TITAN_COMPONENT_H
 
 #include <array>
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -151,7 +152,8 @@ public:
     Titan(std::shared_ptr<VMXPi> vmx, const std::string &name, const uint8_t &canID,
           const uint16_t &motor_freq, const std::array<MotorConfig, 4> &motor_configs,
           int encoder_rate_hz = 20, int motor_update_rate_hz = 50,
-          bool limit_switches = false, bool enable_freshness = false);
+          bool limit_switches = false, bool enable_freshness = false,
+          double topic_timeout_sec = 0.0);
 
     ~Titan();
 
@@ -173,6 +175,9 @@ private:
     bool enabled_ = false;
     bool limit_switches_enabled_ = false;
     bool freshness_enabled_ = false;
+    std::chrono::duration<double> topic_timeout_{0.0};
+    std::array<std::chrono::steady_clock::time_point, 4> last_topic_command_{};
+    std::array<bool, 4> topic_command_active_{};
     uint8_t stale_count_[4]     = {0, 0, 0, 0};
     uint8_t rpm_stale_count_[4] = {0, 0, 0, 0};
     uint8_t cypher_stale_count_ = 0;

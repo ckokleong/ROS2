@@ -25,6 +25,7 @@
 #define STUDICA_CONTROL__GAMEPAD_COMPONENT_H_
 
 #include <memory>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -72,12 +73,17 @@ private:
     double linear_y_;
     double angular_z_;
     bool turbo_mode_;
+    bool deadman_pressed_ = false;
+    bool deadman_armed_ = false;
+    std::chrono::steady_clock::time_point last_joy_{};
+    std::chrono::duration<double> joy_timeout_;
 
     // joystick axis and button index for each control (set via params or /gamepad_buttons)
     int axis_linear_x_;
     int axis_linear_y_;
     int axis_angular_z_;
     int button_turbo_;
+    int button_deadman_;
 };
 
 } // namespace studica_control

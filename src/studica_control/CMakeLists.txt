@@ -92,6 +92,9 @@ ament_target_dependencies(gamepad_component ${dependencies})
 target_link_libraries(gamepad_component "${cpp_typesupport_target}")
 rclcpp_components_register_nodes(gamepad_component "studica_control::GamepadController")
 
+add_library(drivetrain_component SHARED src/components/drivetrain_component.cpp)
+ament_target_dependencies(drivetrain_component ${dependencies})
+
 add_library(imu_component SHARED src/components/imu_component.cpp)
 ament_target_dependencies(imu_component ${dependencies})
 target_link_libraries(imu_component "${cpp_typesupport_target}")
@@ -143,6 +146,7 @@ install(TARGETS
   dio_component
   encoder_component
   gamepad_component
+  drivetrain_component
   imu_component
   light_tower_component
   power_component
@@ -165,6 +169,7 @@ target_link_libraries(manual_composition
   dio_component
   encoder_component
   gamepad_component
+  drivetrain_component
   imu_component
   light_tower_component
   power_component
@@ -274,5 +279,11 @@ set(python_example_scripts
 install(PROGRAMS ${python_example_scripts}
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(omni_kinematics_test test/omni_kinematics_test.cpp)
+  add_test(NAME omni_kinematics_test COMMAND omni_kinematics_test)
+endif()
 
 ament_package()

@@ -17,6 +17,9 @@
 
 #include "studica_control/gamepad_component.hpp"
 
+#include <cmath>
+#include <stdexcept>
+
 namespace studica_control {
 
 
@@ -32,6 +35,8 @@ std::shared_ptr<rclcpp::Node> GamepadController::initialize(rclcpp::Node *contro
     control->declare_parameter("gamepad.deadzone",         0.05);
     control->declare_parameter("gamepad.turbo_multiplier", 2.0);
     control->declare_parameter("gamepad.button_turbo",     5);
+    control->declare_parameter("gamepad.button_deadman",  -1);
+    control->declare_parameter("gamepad.joy_timeout_sec", 0.5);
     control->declare_parameter<std::string>("gamepad.cmd_vel_topic", "cmd_vel");
     control->declare_parameter<int>("gamepad.publish_rate", 50);  // Hz
 
@@ -45,6 +50,8 @@ std::shared_ptr<rclcpp::Node> GamepadController::initialize(rclcpp::Node *contro
         {"deadzone",        control->get_parameter("gamepad.deadzone").as_double()},
         {"turbo_multiplier",control->get_parameter("gamepad.turbo_multiplier").as_double()},
         {"button_turbo",    control->get_parameter("gamepad.button_turbo").as_int()},
+        {"button_deadman",  control->get_parameter("gamepad.button_deadman").as_int()},
+        {"joy_timeout_sec", control->get_parameter("gamepad.joy_timeout_sec").as_double()},
         {"cmd_vel_topic",   control->get_parameter("gamepad.cmd_vel_topic").as_string()},
         {"publish_rate",    control->get_parameter("gamepad.publish_rate").as_int()},
     });
@@ -68,6 +75,8 @@ GamepadController::GamepadController(const rclcpp::NodeOptions &options)
     this->declare_parameter<int>("axis_linear_y", -1);
     this->declare_parameter<int>("axis_angular_z", -1);
     this->declare_parameter<int>("button_turbo", -1);
+    this->declare_parameter<int>("button_deadman", -1);
+    this->declare_parameter<double>("joy_timeout_sec", 0.5);
     this->declare_parameter<int>("publish_rate", 50);
 
     linear_scale_     = this->get_parameter("linear_scale").as_double();
@@ -78,8 +87,17 @@ GamepadController::GamepadController(const rclcpp::NodeOptions &options)
     axis_linear_y_    = this->get_parameter("axis_linear_y").as_int();
     axis_angular_z_   = this->get_parameter("axis_angular_z").as_int();
     button_turbo_     = this->get_parameter("button_turbo").as_int();
+    button_deadman_   = this->get_parameter("button_deadman").as_int();
+    const double joy_timeout = this->get_parameter("joy_timeout_sec").as_double();
+    if (!std::isfinite(joy_timeout) || joy_timeout <= 0 || button_deadman_ < -1 ||
+        (button_deadman_ >= 0 && button_deadman_ == button_turbo_)) {
+        throw std::invalid_argument("invalid gamepad deadman or joy timeout");
+    }
+    joy_timeout_ = std::chrono::duration<double>(joy_timeout);
     int publish_rate  = this->get_parameter("publish_rate").as_int();
-    if (publish_rate < 1) publish_rate = 50;
+    if (publish_rate < 1 || publish_rate > 1000) {
+        throw std::invalid_argument("gamepad publish_rate must be between 1 and 1000 Hz");
+    }
 
     // subscribe to raw joystick input
     joy_subscription_ = this->create_subscription<sensor_msgs::msg::Joy>(
@@ -155,6 +173,12 @@ void GamepadController::gamepad_button_callback(const std_msgs::msg::Int32MultiA
 // reads raw axis values from the joystick message, applies deadzone filtering,
 // and checks the turbo button state. values are stored for use by publish_twist.
 void GamepadController::joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg) {
+    if (last_joy_ == std::chrono::steady_clock::time_point{} ||
+        std::chrono::steady_clock::now() - last_joy_ > joy_timeout_) {
+        deadman_armed_ = false;
+    }
+    deadman_pressed_ = false;
+    last_joy_ = {};
     if (axis_linear_x_ < 0 && axis_linear_y_ < 0 && axis_angular_z_ < 0) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                              "axis mappings not set — awaiting /gamepad_buttons [x,y,z]");
@@ -165,7 +189,8 @@ void GamepadController::joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
     const size_t buttons_sz = msg->buttons.size();
     auto axis_ok = [&](int idx) { return idx < 0 || static_cast<size_t>(idx) < axes_sz; };
     if (!axis_ok(axis_linear_x_) || !axis_ok(axis_linear_y_) || !axis_ok(axis_angular_z_) ||
-        buttons_sz <= static_cast<size_t>(button_turbo_)) {
+        (button_turbo_ >= 0 && buttons_sz <= static_cast<size_t>(button_turbo_)) ||
+        (button_deadman_ >= 0 && buttons_sz <= static_cast<size_t>(button_deadman_))) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                              "controller does not have enough axes or buttons for the configured mapping");
         return;
@@ -179,7 +204,19 @@ void GamepadController::joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg)
     linear_x_  = (axis_linear_x_  >= 0) ? apply_deadzone(msg->axes[axis_linear_x_])  : 0.0;
     linear_y_  = (axis_linear_y_  >= 0) ? apply_deadzone(msg->axes[axis_linear_y_])  : 0.0;
     angular_z_ = (axis_angular_z_ >= 0) ? apply_deadzone(msg->axes[axis_angular_z_]) : 0.0;
-    turbo_mode_ = (msg->buttons[button_turbo_] == 1);
+    if (!std::isfinite(linear_x_) || !std::isfinite(linear_y_) || !std::isfinite(angular_z_)) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "non-finite joystick input");
+        return;
+    }
+    turbo_mode_ = button_turbo_ >= 0 && msg->buttons[button_turbo_] == 1;
+    if (button_deadman_ < 0) {
+        deadman_pressed_ = true;
+    } else if (msg->buttons[button_deadman_] == 0) {
+        deadman_armed_ = true;
+    } else {
+        deadman_pressed_ = deadman_armed_ && msg->buttons[button_deadman_] == 1;
+    }
+    last_joy_ = std::chrono::steady_clock::now();
 
     RCLCPP_DEBUG_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                           "joy input — linear: [%.2f, %.2f], angular: %.2f, turbo: %s",
@@ -194,12 +231,18 @@ void GamepadController::publish_twist() {
     double ang_scale = angular_scale_ * (turbo_mode_ ? turbo_multiplier_ : 1.0);
 
     geometry_msgs::msg::Twist twist_msg;
-    twist_msg.linear.x  = linear_x_  * lin_scale;
-    twist_msg.linear.y  = linear_y_  * lin_scale;
+    const bool active = deadman_pressed_ && last_joy_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - last_joy_ <= joy_timeout_;
+    if (!active && last_joy_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() - last_joy_ > joy_timeout_) {
+        deadman_armed_ = false;
+    }
+    twist_msg.linear.x  = active ? linear_x_ * lin_scale : 0.0;
+    twist_msg.linear.y  = active ? linear_y_ * lin_scale : 0.0;
     twist_msg.linear.z  = 0.0;
     twist_msg.angular.x = 0.0;
     twist_msg.angular.y = 0.0;
-    twist_msg.angular.z = angular_z_ * ang_scale;
+    twist_msg.angular.z = active ? angular_z_ * ang_scale : 0.0;
 
     cmd_vel_publisher_->publish(twist_msg);
 

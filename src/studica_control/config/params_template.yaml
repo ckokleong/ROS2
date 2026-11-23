@@ -41,6 +41,7 @@ control_server:
         motor_freq: 15600   # PWM frequency (Hz)
         encoder_rate_hz: 20 # encoder/rpm feedback publish rate in Hz (default 20)
         motor_update_rate_hz: 50  # how often motor speeds are sent to hardware, in Hz (default 50)
+        topic_timeout_sec: 0.3    # stop stale topic commands; 0 disables timeout
         limit_switches: false     # true = publish /m_N/limit_fwd and /m_N/limit_rev (std_msgs/Bool)
         enable_freshness: false   # true = skip publish on stale CAN frames (encoder, RPM, cypher max, limit switch); warn after 5 consecutive stale reads
         m_0:
@@ -272,9 +273,30 @@ control_server:
       axis_linear_y: -1     # joystick axis index for strafe      (-1 = unmapped)
       axis_angular_z: 0     # joystick axis index for rotation    (-1 = unmapped)
       button_turbo: 5       # button index that activates turbo mode
+      button_deadman: -1    # choose a real button index for drivetrain use; hold to move
+      joy_timeout_sec: 0.5  # stop publishing motion if /joy messages stop
       linear_scale: 1.0     # scale factor applied to linear axes
       angular_scale: 1.0    # scale factor applied to angular axis
       deadzone: 0.05        # axis values below this are treated as zero
       turbo_multiplier: 2.0 # speed multiplier when turbo button is held
       publish_rate: 50      # cmd_vel publish rate in Hz (higher = lower stop latency)
       cmd_vel_topic: "cmd_vel"
+
+    # Three tangential omni wheels, configured independently of the physical motor order.
+    # These are examples, NOT your robot's measured dimensions or motor mapping.
+    # Requires titan.enabled, the named Titan, and its topic_timeout_sec > 0.
+    # For gamepad use, also set gamepad.enabled and a valid button_deadman.
+    drivetrain:
+      enabled: false
+      type: "omni3"               # only omni3 is implemented
+      titan_name: "titan0"
+      cmd_vel_topic: "cmd_vel"
+      motor_indices: [0, 1, 2]   # Titan motor ports in wheel order
+      wheel_angles_deg: [0.0, 120.0, 240.0] # radial positions: x forward, y left
+      wheel_directions: [1, 1, 1] # +1 or -1, adjusts motor polarity
+      wheel_radius_m: 0.05        # measure your wheels
+      wheel_distance_m: 0.2       # center to wheel contact, measure your robot
+      max_wheel_speed_rad_s: 20.0 # reference speed at max_duty, calibrate
+      max_duty: 0.2               # limit all outputs; start small
+      cmd_timeout_sec: 0.3
+      publish_rate_hz: 50

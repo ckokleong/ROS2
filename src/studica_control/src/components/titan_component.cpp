@@ -21,6 +21,8 @@
 
 #include "studica_control/titan_component.hpp"
 #include <thread>
+#include <cmath>
+#include <stdexcept>
 
 namespace studica_control {
 
@@ -39,6 +41,7 @@ std::vector<std::shared_ptr<rclcpp::Node>> Titan::initialize(rclcpp::Node *contr
         std::string motor_update_rate_param = "titan." + sensor + ".motor_update_rate_hz";
         std::string limit_switches_param      = "titan." + sensor + ".limit_switches";
         std::string enable_freshness_param   = "titan." + sensor + ".enable_freshness";
+        std::string topic_timeout_param = "titan." + sensor + ".topic_timeout_sec";
 
         control->declare_parameter<int> (can_id_param, -1);
         control->declare_parameter<int> (motor_freq_param, -1);
@@ -46,6 +49,7 @@ std::vector<std::shared_ptr<rclcpp::Node>> Titan::initialize(rclcpp::Node *contr
         control->declare_parameter<int> (motor_update_rate_param, 50);
         control->declare_parameter<bool>(limit_switches_param, false);
         control->declare_parameter<bool>(enable_freshness_param, false);
+        control->declare_parameter<double>(topic_timeout_param, 0.0);
 
         uint8_t  can_id               = static_cast<uint8_t>(control->get_parameter(can_id_param).as_int());
         uint16_t motor_freq           = static_cast<uint16_t>(control->get_parameter(motor_freq_param).as_int());
@@ -53,6 +57,10 @@ std::vector<std::shared_ptr<rclcpp::Node>> Titan::initialize(rclcpp::Node *contr
         int      motor_update_rate_hz = control->get_parameter(motor_update_rate_param).as_int();
         bool     limit_switches       = control->get_parameter(limit_switches_param).as_bool();
         bool     enable_freshness     = control->get_parameter(enable_freshness_param).as_bool();
+        double topic_timeout = control->get_parameter(topic_timeout_param).as_double();
+        if (!std::isfinite(topic_timeout) || topic_timeout < 0.0) {
+            throw std::invalid_argument("titan topic_timeout_sec must be nonnegative and finite");
+        }
 
         std::array<MotorConfig, 4> motor_configs;
         for (int m = 0; m < 4; m++) {
@@ -80,7 +88,7 @@ std::vector<std::shared_ptr<rclcpp::Node>> Titan::initialize(rclcpp::Node *contr
 
         auto titan = std::make_shared<Titan>(vmx, sensor, can_id, motor_freq, motor_configs,
                                              encoder_rate_hz, motor_update_rate_hz,
-                                             limit_switches, enable_freshness);
+                                             limit_switches, enable_freshness, topic_timeout);
         titan_nodes.push_back(titan);
     }
 
@@ -93,9 +101,11 @@ Titan::Titan(const rclcpp::NodeOptions &options) : Node("titan_", options) {}
 
 Titan::Titan(std::shared_ptr<VMXPi> vmx, const std::string &name, const uint8_t &canID,
              const uint16_t &motor_freq, const std::array<MotorConfig, 4> &motor_configs,
-             int encoder_rate_hz, int motor_update_rate_hz, bool limit_switches, bool enable_freshness)
+             int encoder_rate_hz, int motor_update_rate_hz, bool limit_switches, bool enable_freshness,
+             double topic_timeout_sec)
     : Node(name), vmx_(vmx), canID_(canID), motor_freq_(motor_freq), motor_configs_(motor_configs),
-      limit_switches_enabled_(limit_switches), freshness_enabled_(enable_freshness) {
+      limit_switches_enabled_(limit_switches), freshness_enabled_(enable_freshness),
+      topic_timeout_(topic_timeout_sec) {
 
     titan_ = std::make_shared<studica_driver::Titan>(canID_, motor_freq_, 1, vmx_);
 
@@ -111,7 +121,26 @@ Titan::Titan(std::shared_ptr<VMXPi> vmx, const std::string &name, const uint8_t 
             prefix + "/cmd", 1,
             [this, i](std_msgs::msg::Float64::SharedPtr msg) {
                 if (!enabled_) return;
+                if (!std::isfinite(msg->data) || std::abs(msg->data) > 1.0) {
+                    speeds_[i] = 0.0f;
+                    target_rpm_[i] = 0.0f;
+                    topic_command_active_[i] = false;
+                    position_active_[i] = false;
+                    RCLCPP_ERROR(get_logger(), "invalid motor %d duty command; stopping motor", i);
+                    return;
+                }
+                if (pid_type_[i] != 0) {
+                    speeds_[i] = 0.0f;
+                    target_rpm_[i] = 0.0f;
+                    topic_command_active_[i] = false;
+                    position_active_[i] = false;
+                    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+                                         "motor %d is in PID mode; rejecting duty command", i);
+                    return;
+                }
                 speeds_[i] = static_cast<float>(msg->data);  // store only — resend_speeds is the sole sender
+                last_topic_command_[i] = std::chrono::steady_clock::now();
+                topic_command_active_[i] = true;
                 position_active_[i] = false;
             });
 
@@ -186,10 +215,13 @@ Titan::~Titan() {}
 void Titan::resume_motion_resend(int motor, bool all_motors)
 {
     if (all_motors) {
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 4; i++) {
             position_active_[i] = false;
+            topic_command_active_[i] = false;
+        }
     } else {
         position_active_[motor] = false;
+        topic_command_active_[motor] = false;
     }
 }
 
@@ -635,6 +667,12 @@ void Titan::publish_encoders() {
 void Titan::resend_speeds() {
     if (!enabled_) return;
     for (int i = 0; i < 4; i++) {
+        if (topic_timeout_.count() > 0.0 && topic_command_active_[i] &&
+            std::chrono::steady_clock::now() - last_topic_command_[i] > topic_timeout_) {
+            speeds_[i] = 0.0f;
+            topic_command_active_[i] = false;
+            RCLCPP_WARN(get_logger(), "motor %d command timed out; stopping", i);
+        }
         if (position_active_[i])
             continue;
         if (pid_type_[i] == 0)

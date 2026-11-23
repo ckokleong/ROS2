@@ -3,3 +3,6 @@ control_server:
     use_sim_time: false
     # Configure your robot here before launching.
     # See params_template.yaml for the full parameter reference.
+    drivetrain:
+      enabled: false
+      type: "omni3"
