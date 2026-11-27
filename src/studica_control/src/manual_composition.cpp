@@ -11,6 +11,7 @@
 #include "studica_control/encoder_component.hpp"
 #include "studica_control/gamepad_component.hpp"
 #include "studica_control/drivetrain_component.hpp"
+#include "studica_control/wheel_odometry_component.hpp"
 #include "studica_control/imu_component.hpp"
 #include "studica_control/light_tower_component.hpp"
 #include "studica_control/power_component.hpp"
@@ -43,6 +44,7 @@ public:
         this->declare_parameter<bool>("light_tower.enabled", false);
         this->declare_parameter<bool>("gamepad.enabled", false);
         this->declare_parameter<bool>("drivetrain.enabled", false);
+        this->declare_parameter<bool>("odometry.enabled", false);
         this->declare_parameter<bool>("imu.enabled", false);
         this->declare_parameter<bool>("servo.enabled", false);
         this->declare_parameter<bool>("sharp.enabled", false);
@@ -67,6 +69,7 @@ public:
         bool light_tower_enabled  = this->get_parameter("light_tower.enabled").as_bool();
         bool gamepad_enabled = this->get_parameter("gamepad.enabled").as_bool();
         bool drivetrain_enabled = this->get_parameter("drivetrain.enabled").as_bool();
+        bool odometry_enabled = this->get_parameter("odometry.enabled").as_bool();
         bool imu_enabled = this->get_parameter("imu.enabled").as_bool();
         bool servo_enabled = this->get_parameter("servo.enabled").as_bool();
         bool sharp_enabled = this->get_parameter("sharp.enabled").as_bool();
@@ -133,6 +136,13 @@ public:
                 throw std::invalid_argument("drivetrain with gamepad requires gamepad.button_deadman");
             }
             component_nodes.push_back(studica_control::Drivetrain::initialize(this));
+        }
+
+        if (odometry_enabled) {
+            if (!drivetrain_enabled) {
+                throw std::invalid_argument("odometry requires drivetrain.enabled");
+            }
+            component_nodes.push_back(studica_control::WheelOdometry::initialize(this));
         }
 
         if (ultrasonic_enabled) {

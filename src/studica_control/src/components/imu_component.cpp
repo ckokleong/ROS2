@@ -16,6 +16,8 @@
  */
 
 #include "studica_control/imu_component.hpp"
+#include <cmath>
+#include <stdexcept>
 
 namespace studica_control {
 
@@ -25,12 +27,17 @@ std::shared_ptr<rclcpp::Node> Imu::initialize(rclcpp::Node *control, std::shared
     control->declare_parameter<std::string>("imu.name");
     control->declare_parameter<std::string>("imu.topic");
     control->declare_parameter<std::string>("imu.frame_id", "imu_link");
+    control->declare_parameter<double>("imu.gyro_variance", -1.0);
 
     std::string name     = control->get_parameter("imu.name").as_string();
     std::string topic    = control->get_parameter("imu.topic").as_string();
     std::string frame_id = control->get_parameter("imu.frame_id").as_string();
+    double gyro_variance = control->get_parameter("imu.gyro_variance").as_double();
+    if (!std::isfinite(gyro_variance) || (gyro_variance <= 0.0 && gyro_variance != -1.0)) {
+        throw std::invalid_argument("imu.gyro_variance must be positive or -1 (unavailable)");
+    }
 
-    return std::make_shared<Imu>(vmx, name, topic, frame_id);
+    return std::make_shared<Imu>(vmx, name, topic, frame_id, gyro_variance);
 }
 
 
@@ -40,8 +47,9 @@ Imu::Imu(const rclcpp::NodeOptions &options) : Node("imu", options) {}
 
 // main constructor — connects to the imu and sets up the publisher,
 // service, and periodic timer. zeros the yaw on startup.
-Imu::Imu(std::shared_ptr<VMXPi> vmx, const std::string &name, const std::string &topic, const std::string &frame_id)
-    : rclcpp::Node(name), vmx_(vmx), frame_id_(frame_id) {
+Imu::Imu(std::shared_ptr<VMXPi> vmx, const std::string &name, const std::string &topic, const std::string &frame_id,
+         double gyro_variance)
+    : rclcpp::Node(name), vmx_(vmx), frame_id_(frame_id), gyro_variance_(gyro_variance) {
 
     imu_ = std::make_shared<studica_driver::Imu>(vmx_);
     imu_->ZeroYaw();
@@ -93,7 +101,7 @@ void Imu::cmd_callback(const std::shared_ptr<studica_control::srv::SetData::Requ
 // reads orientation, angular velocity, and linear acceleration from the
 // imu and publishes them as a standard ros2 imu message.
 // units: orientation as quaternion, angular velocity in rad/s, acceleration in m/s²
-// covariances are set to -1 (unknown) — set your own values if needed
+// Orientation and acceleration are marked unavailable; gyro variance is configurable.
 void Imu::publish_data() {
     sensor_msgs::msg::Imu msg;
     msg.header.stamp    = this->get_clock()->now();
@@ -132,9 +140,19 @@ void Imu::publish_data() {
     msg.linear_acceleration.y = -imu_->GetRawAccelX() * 9.80665;
     msg.linear_acceleration.z =  imu_->GetRawAccelZ() * 9.80665;
 
-    // -1 in the first covariance element means "unknown" per the ros2 imu spec
+    // -1 in the first covariance element means the measurement is unavailable.
     msg.orientation_covariance[0]         = -1.0;
-    msg.angular_velocity_covariance[0]    = -1.0;
+    if (gyro_variance_ > 0.0 && std::isfinite(msg.angular_velocity.x) &&
+        std::isfinite(msg.angular_velocity.y) && std::isfinite(msg.angular_velocity.z)) {
+        msg.angular_velocity_covariance[0] = gyro_variance_;
+        msg.angular_velocity_covariance[4] = gyro_variance_;
+        msg.angular_velocity_covariance[8] = gyro_variance_;
+    } else {
+        msg.angular_velocity_covariance[0] = -1.0;
+        if (gyro_variance_ > 0.0) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "IMU gyro sample is non-finite");
+        }
+    }
     msg.linear_acceleration_covariance[0] = -1.0;
 
     publisher_->publish(msg);

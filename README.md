@@ -403,6 +403,154 @@ fault. Verify the behavior on your actual Bluetooth hardware, and provide an
 independent physical emergency stop. The timeouts are not a safety-rated stop.
 Titan service commands are not covered by the topic timeout.
 
+### Wheel odometry and TF (three-wheel omni)
+
+This optional setup estimates planar motion from the three Titan quadrature
+encoders and the VMX IMU's yaw rate. A wheel-velocity node implements the
+`omni3` forward kinematics; `robot_localization` fuses that velocity and the
+IMU gyro using a 2D EKF. Other drivetrain types require their own kinematics
+implementation; changing `drivetrain.type` alone does not add one.
+This setup uses system time on the hardware and does not support `use_sim_time`.
+
+```text
+/titan0/m_{3,0,1}/encoder_stamped --> wheel_odometry --> /wheel_twist --+
+/imu -------------------------------------------------------------------+--> EKF --> /odom
+
+map --(SLAM, if used)--> odom --(EKF)--> base_footprint
+                                          └--(fixed)--> base_link
+                                                         ├--(fixed)--> imu_link
+                                                         └--(fixed)--> laser_link (optional)
+```
+
+Only the EKF publishes `odom -> base_footprint`. The `localization.launch.py`
+launch generates a fixed-joint robot description from the configured `frames`
+and runs `robot_state_publisher`; it does not publish `map -> odom` or launch
+SLAM. Do not run another publisher for these same TF edges.
+
+Install the extra ROS packages, rebuild and source the workspace:
+
+```bash
+sudo apt install ros-humble-robot-localization ros-humble-robot-state-publisher
+colcon build --packages-select studica_control
+source install/setup.bash
+```
+
+In the **same configuration file** used for both launch commands, enable and
+calibrate the following (keep the rest of your working Titan, drivetrain and
+gamepad settings). This example reflects ports 3, 0, 1 for front-left,
+front-right and rear. All signs, physical mounts and variances are illustrative:
+
+```yaml
+control_server:
+  ros__parameters:
+    titan:
+      enabled: true
+      sensors: ["titan0"]
+      titan0:
+        can_id: 42                  # your actual CAN ID
+        motor_freq: 15600
+        topic_timeout_sec: 0.3
+        m_3: {encoder_mode: "quadrature", dist_per_tick: 0.0002399828}
+        m_0: {encoder_mode: "quadrature", dist_per_tick: 0.0002399828}
+        m_1: {encoder_mode: "quadrature", dist_per_tick: 0.0002399828}
+    imu:
+      enabled: true
+      name: "imu"
+      topic: "/imu"
+      frame_id: "imu_link"
+      gyro_variance: 0.01           # example only, measure and tune (rad/s)^2
+    drivetrain:
+      enabled: true
+      type: "omni3"
+      titan_name: "titan0"
+      motor_indices: [3, 0, 1]
+      wheel_angles_deg: [60.0, 300.0, 180.0]
+      wheel_directions: [1, 1, 1]  # retain your calibrated motor directions
+      wheel_radius_m: 0.055
+      wheel_distance_m: 0.214
+      max_wheel_speed_rad_s: 20.0  # retain your calibrated drive values
+      max_duty: 0.2
+    odometry:
+      enabled: true
+      base_frame: "base_footprint"
+      odom_frame: "odom"
+      wheel_twist_topic: "/wheel_twist"
+      encoder_directions: [1, 1, 1] # calibrate independently of motor directions
+      max_sample_skew_sec: 0.03
+      max_sample_interval_sec: 0.3
+      max_wheel_speed_m_s: 1.0     # physically plausible max, adjust to hardware
+      twist_variances: [0.02, 0.02, 0.05] # vx, vy, yaw-rate variances; tune
+    frames:
+      base_link_height_m: 0.0      # measure base_link height above ground plane
+      sensors: ["imu_link", "laser_link"]
+      imu_link:
+        xyz: [0.0, 0.0, 0.0]     # replace with measured mount in meters
+        rpy: [0.0, 0.0, 0.0]     # replace with measured orientation in radians
+      laser_link:
+        xyz: [0.0, 0.0, 0.0]     # example only; use actual LiDAR mount
+        rpy: [0.0, 0.0, 0.0]
+
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    print_diagnostics: true
+    # x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az
+    twist0_config: [false, false, false, false, false, false,
+                    true, true, false, false, false, true, false, false, false]
+    imu0_config:   [false, false, false, false, false, false,
+                    false, false, false, false, false, true, false, false, false]
+    twist0_queue_size: 10
+    imu0_queue_size: 10
+```
+
+The distance per tick assumes a 55 mm radius and **1440 actual reported
+counts per wheel revolution** (including gearing and quadrature decoding).
+Check by manually turning each wheel one revolution. Use `invert_encoder` on
+the Titan or `encoder_directions` in odometry to correct each sign, not both.
+The sign convention is positive wheel travel in the tangential direction
+90 degrees counterclockwise from the wheel's radial angle. Verify
+`/wheel_twist`: +x forward, +y left, +yaw counterclockwise.
+
+The IMU driver already remaps the VMX native axes to ROS axes. `imu_link` must
+describe the orientation of the **published ROS axes**, not apply that remap
+again. Check that the reported gyro Z is positive for counterclockwise
+rotation and measure a realistic stationary gyro variance. Only gyro yaw rate
+is fused; orientation and acceleration remain marked unavailable.
+
+Frame `base_footprint` is the horizontal ground-plane projection of the
+kinematic center; `base_link` is directly above it. For each fixed sensor, add
+its unique frame name to `frames.sensors` and define `xyz` (meters) and `rpy`
+(roll, pitch, yaw in radians), relative to `base_link`. Use the same frame
+name in the sensor's messages. These are fixed mounting transforms, not wheel
+joint animation. Configure frame positions accurately before SLAM.
+
+Start the hardware driver and localization in separate terminals, using the
+same absolute path to the configuration file and ROS domain/RMW:
+
+```bash
+ros2 launch studica_control studica_launch.py params_file:=/absolute/path/to/params.yaml
+ros2 launch studica_control localization.launch.py params_file:=/absolute/path/to/params.yaml
+```
+
+Verify `/titan0/m_3/encoder_stamped`, `/wheel_twist`, `/imu`, `/odom`, and
+`ros2 run tf2_ros tf2_echo odom base_footprint`. Check the frame tree and
+measure travel and turns in all directions at low speed. With wheels lifted,
+verify encoder signs first; then test on the ground because omni wheels can
+slip. Tune wheel and gyro variances against measured data. Never reset encoders
+while driving. Explicit resets re-baseline wheel odometry; samples with excess
+skew, gaps or implausible speed are rejected. Encoder timestamps are ROS host
+read times, not synchronized CAN hardware sample times.
+
+**Limitations:** the EKF can continue predicting when measurements stop, so
+stale `/odom` is not a motion-safety mechanism. Wheel slip, gyro bias and poor
+calibration cause drift; use an independent physical emergency stop. For SLAM
+Toolbox, add a correctly configured 2D LiDAR publishing `LaserScan`, its
+`base_link -> laser_link` TF, and SLAM's `map -> odom` TF. IMU and encoders
+alone do not map the environment.
+
 ### Verify Sensor Output
 
 ```bash

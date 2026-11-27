@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME} # <- SRV files (srv, msg, action)
   "msg/ColoreMatch.msg"
   "msg/DutyCycleEncoderMsg.msg"
   "msg/EncoderMsg.msg"
+  "msg/EncoderDistanceStamped.msg"
   "msg/InitializeParams.msg"
   "msg/ParsecZoneMsg.msg"
   "srv/ControlImu.srv"
@@ -92,6 +93,10 @@ ament_target_dependencies(gamepad_component ${dependencies})
 target_link_libraries(gamepad_component "${cpp_typesupport_target}")
 rclcpp_components_register_nodes(gamepad_component "studica_control::GamepadController")
 
+add_library(wheel_odometry_component SHARED src/components/wheel_odometry_component.cpp)
+ament_target_dependencies(wheel_odometry_component ${dependencies})
+target_link_libraries(wheel_odometry_component "${cpp_typesupport_target}")
+
 add_library(drivetrain_component SHARED src/components/drivetrain_component.cpp)
 ament_target_dependencies(drivetrain_component ${dependencies})
 
@@ -146,6 +151,7 @@ install(TARGETS
   dio_component
   encoder_component
   gamepad_component
+  wheel_odometry_component
   drivetrain_component
   imu_component
   light_tower_component
@@ -169,6 +175,7 @@ target_link_libraries(manual_composition
   dio_component
   encoder_component
   gamepad_component
+  wheel_odometry_component
   drivetrain_component
   imu_component
   light_tower_component
@@ -284,6 +291,14 @@ if(BUILD_TESTING)
   enable_testing()
   add_executable(omni_kinematics_test test/omni_kinematics_test.cpp)
   add_test(NAME omni_kinematics_test COMMAND omni_kinematics_test)
+  add_executable(wheel_kinematics_test test/wheel_kinematics_test.cpp)
+  add_test(NAME wheel_kinematics_test COMMAND wheel_kinematics_test)
+  add_executable(wheel_odometry_test test/wheel_odometry_test.cpp)
+  ament_target_dependencies(wheel_odometry_test ${dependencies})
+  target_link_libraries(wheel_odometry_test wheel_odometry_component "${cpp_typesupport_target}")
+  add_test(NAME wheel_odometry_test COMMAND wheel_odometry_test)
+  add_test(NAME localization_launch_test
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test/localization_launch_test.py)
 endif()
 
 ament_package()

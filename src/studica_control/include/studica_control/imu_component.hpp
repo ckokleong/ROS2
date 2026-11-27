@@ -11,7 +11,7 @@
  *     orientation      — quaternion (x, y, z, w), relative to power-on heading
  *     angular_velocity — radians per second (converted from deg/s)
  *     linear_accel     — metres per second squared (converted from g)
- *   covariance fields are set to -1 (unknown) per ros2 convention (rep-145).
+ *   orientation and acceleration are marked unavailable; gyro covariance is configurable.
  *
  * service: <name>/get_imu_data (studica_control/SetData)
  *   params field sets the command:
@@ -45,7 +45,7 @@ public:
 
     // main constructor — connects to the imu and sets up topics/services
     Imu(std::shared_ptr<VMXPi> vmx, const std::string &name,
-        const std::string &topic, const std::string &frame_id);
+        const std::string &topic, const std::string &frame_id, double gyro_variance = -1.0);
 
     ~Imu();
 
@@ -53,6 +53,7 @@ private:
     std::shared_ptr<studica_driver::Imu> imu_;
     std::shared_ptr<VMXPi> vmx_;
     std::string frame_id_;  // ros frame this imu is attached to (e.g. "imu_link")
+    double gyro_variance_ = -1.0;
 
     rclcpp::Service<studica_control::srv::SetData>::SharedPtr service_;
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr publisher_;

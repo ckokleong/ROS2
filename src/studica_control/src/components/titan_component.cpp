@@ -8,6 +8,7 @@
  *
  *   quadrature (default):
  *     publishes /name/m_N/encoder (distance) and /name/m_N/rpm at 20hz
+ *     publishes /name/m_N/encoder_stamped when a fresh CAN frame is read
  *
  *   absolute (cypher encoder):
  *     publishes /name/m_N/angle (degrees) at 20hz
@@ -107,6 +108,9 @@ Titan::Titan(std::shared_ptr<VMXPi> vmx, const std::string &name, const uint8_t 
       limit_switches_enabled_(limit_switches), freshness_enabled_(enable_freshness),
       topic_timeout_(topic_timeout_sec) {
 
+    encoder_epochs_.fill(static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()));
     titan_ = std::make_shared<studica_driver::Titan>(canID_, motor_freq_, 1, vmx_);
 
     service_ = this->create_service<studica_control::srv::SetData>(
@@ -149,6 +153,8 @@ Titan::Titan(std::shared_ptr<VMXPi> vmx, const std::string &name, const uint8_t 
         rpm_pubs_[i] = this->create_publisher<std_msgs::msg::Float64>(prefix + "/rpm", 10);
         if (motor_configs_[i].encoder_mode == EncoderMode::Quadrature) {
             encoder_pubs_[i] = this->create_publisher<std_msgs::msg::Float64>(prefix + "/encoder", 10);
+            encoder_stamped_pubs_[i] = this->create_publisher<studica_control::msg::EncoderDistanceStamped>(
+                prefix + "/encoder_stamped", 10);
             RCLCPP_INFO(this->get_logger(), "  m_%d: quadrature -> /%s/encoder, /%s/rpm",
                         i, prefix.c_str(), prefix.c_str());
         } else {
@@ -236,6 +242,11 @@ void Titan::cmd(std::string params,
                 std::shared_ptr<studica_control::srv::SetData::Request> request,
                 std::shared_ptr<studica_control::srv::SetData::Response> response) {
 
+    if (request->initparams.n_encoder < 0 || request->initparams.n_encoder > 3) {
+        response->success = false;
+        response->message = "motor index must be between 0 and 3";
+        return;
+    }
     uint8_t motor = static_cast<uint8_t>(request->initparams.n_encoder);
 
     // --- basic control ---
@@ -442,22 +453,26 @@ void Titan::cmd(std::string params,
 
     } else if (params == "setup_encoder") {
         titan_->SetupEncoder(motor);
+        ++encoder_epochs_[motor];
         response->success = true;
         response->message = "encoder " + std::to_string(motor) + " setup complete";
 
     } else if (params == "configure_encoder") {
         titan_->ConfigureEncoder(motor, static_cast<double>(request->initparams.dist_per_tick));
+        ++encoder_epochs_[motor];
         response->success = true;
         response->message = "encoder " + std::to_string(motor) + " configured";
 
     } else if (params == "set_encoder_resolution") {
         titan_->SetEncoderResolution(motor, static_cast<uint16_t>(request->initparams.int_value));
+        ++encoder_epochs_[motor];
         response->success = true;
         response->message = "encoder " + std::to_string(motor) + " resolution set to "
                             + std::to_string(request->initparams.int_value) + " cpr";
 
     } else if (params == "reset_encoder") {
         titan_->ResetEncoder(motor);
+        ++encoder_epochs_[motor];
         response->success = true;
         response->message = "encoder " + std::to_string(motor) + " reset";
 
@@ -494,6 +509,7 @@ void Titan::cmd(std::string params,
 
     } else if (params == "invert_encoder_direction") {
         titan_->InvertEncoderDirection(motor);
+        ++encoder_epochs_[motor];
         response->success = true;
         response->message = "motor " + std::to_string(motor) + " encoder direction inverted";
 
@@ -565,9 +581,20 @@ void Titan::publish_encoders() {
     // Quadrature encoder
     for (int i = 0; i < 4; i++) {
         if (motor_configs_[i].encoder_mode != EncoderMode::Quadrature) continue;
+        double enc_dist = 0.0;
+        bool enc_fresh = false;
+        if (!titan_->GetEncoderDistanceFresh(i, enc_dist, enc_fresh, nullptr)) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "m_%d: encoder read failed", i);
+            continue;
+        }
+        if (enc_fresh) {
+            studica_control::msg::EncoderDistanceStamped stamped;
+            stamped.header.stamp = get_clock()->now();
+            stamped.distance = enc_dist;
+            stamped.epoch = encoder_epochs_[i];
+            encoder_stamped_pubs_[i]->publish(stamped);
+        }
         if (freshness_enabled_) {
-            double enc_dist; bool enc_fresh;
-            titan_->GetEncoderDistanceFresh(i, enc_dist, enc_fresh, nullptr);
             if (enc_fresh) {
                 stale_count_[i] = 0;
                 std_msgs::msg::Float64 msg; msg.data = enc_dist;
@@ -578,7 +605,7 @@ void Titan::publish_encoders() {
                                 i, stale_count_[i]);
             }
         } else {
-            std_msgs::msg::Float64 msg; msg.data = titan_->GetEncoderDistance(i);
+            std_msgs::msg::Float64 msg; msg.data = enc_dist;
             encoder_pubs_[i]->publish(msg);
         }
     }

@@ -6,3 +6,5 @@ control_server:
     drivetrain:
       enabled: false
       type: "omni3"
+    odometry:
+      enabled: false

@@ -122,6 +122,7 @@
 #include "std_msgs/msg/float64.hpp"
 
 #include "studica_control/srv/set_data.hpp"
+#include "studica_control/msg/encoder_distance_stamped.hpp"
 #include "titan.hpp"
 #include "VMXPi.h"
 
@@ -187,6 +188,8 @@ private:
 
     // quadrature feedback — only created for motors in quadrature mode
     std::array<rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr, 4> encoder_pubs_;
+    std::array<rclcpp::Publisher<studica_control::msg::EncoderDistanceStamped>::SharedPtr, 4> encoder_stamped_pubs_;
+    std::array<uint64_t, 4> encoder_epochs_{};
     std::array<rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr, 4> rpm_pubs_;
 
     // absolute feedback — only created for motors in absolute mode
